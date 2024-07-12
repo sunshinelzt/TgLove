@@ -3,107 +3,84 @@
 #--# Author:   by sunshine          #--#
 ####--------------------------------####
 
-import asyncio
-import contextlib
 import logging
-import re
-from datetime import datetime
+from typing import Union
 
-from hikkatl.tl.functions.messages import StartBotRequest
-from hikkatl.tl.types import Message
+import requests
+from telethon.tl.types import Message
 
 from .. import loader, utils
+from ..inline.types import InlineCall
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
-###########################
-## Console color print
-red    = [206, 76,  54]
-green  = [68,  250, 123]
-blue   = [253, 127, 233]
-yellow = [241, 250, 118]
-orange = [255, 184, 107]
-
-def colored(color, text):
-    """Returns a text string wrapped in ANSI escape codes for the specified color."""
-    return "\033[38;2;{};{};{}m{}\033[38;2;255;255;255m".format(color[0], color[1], color[2], text)
-
-@loader.tds
-class CustomModule(loader.Module):
-    """Script for beautiful text layout"""
+class TgLove(loader.Module):
+    """Animation of hearts without spamming logs and floodwaiters"""
 
     strings = {
-        "name": "TgLove",
-        "ping": "pong",
-        "error_t": "[" + colored(red, "Error") + "] " + "Не удалось выполнить команду [.t] Возможно был словлен flood.",
-        "error_heart": "[" + colored(red, "Error") + "] " + "Не удалось выполнить команду [.heart] Возможно был словлен flood."
+        "message": "<b>❤️‍🔥 Я хочу тебе сказать кое-что...</b>\n<i>{}</i>",
+        "_cls_doc": "Анимация сердечек без спама в логи и флудвейтов",
     }
 
-    @loader.owner
-    async def pingcmd(self, message):
-        """Ответ на команду .ping"""
-        try:
-            await message.respond(self.strings("ping"))
-            await asyncio.sleep(1)
-            await message.delete()
-        except Exception as e:
-            logger.error(f"Error in pingcmd: {e}")
+    def __init__(self):
+        super().__init__()
+        self.classic_frames = []
 
-    @loader.owner
-    async def tcmd(self, message):
-        """Моделирование набора текста: .t <text>"""
+    async def client_ready(self):
         try:
-            text = utils.get_args_raw(message)
-            if not text:
-                return
-            orig_text = text
-            tbp = ""  # to be printed
-            typing_symbol = "/"
-            while tbp != orig_text:
-                typing_symbol = "_"
-                await utils.edit_message(message, tbp + typing_symbol)
-                await asyncio.sleep(0.1)
-                tbp = tbp + text[0]
-                text = text[1:]
-                typing_symbol = "-"
-                await utils.edit_message(message, tbp)
-                await asyncio.sleep(0.1)
-        except Exception as e:
-            await message.respond(self.strings("error_t"))
-            logger.error(f"Error in tcmd: {e}")
+            response = await utils.run_sync(
+                requests.get,
+                "https://raw.githubusercontent.com/sunshinelzt/TgLove/main/ily_classic.json",
+            )
+            response.raise_for_status()
+            self.classic_frames = response.json()
+        except (requests.RequestException, ValueError) as e:
+            logger.error(f"Failed to fetch classic frames: {e}")
 
-    @loader.owner
-    async def heartcmd(self, message):
-        """Анимация сердца: .heart <text>"""
+    async def ily_handler(
+        self,
+        obj: Union[InlineCall, Message],
+        text: str,
+        inline: bool = False,
+    ):
+        frames = self.classic_frames + [
+            f'<b>{" ".join(text.split()[: i + 1])}</b>'
+            for i in range(len(text.split()))
+        ]
+
         try:
-            text = utils.get_args_raw(message) or "Создано с любовью by sunshine"
-            heart_emoji = [
-                "✨-💎",
-                "✨-🌺",
-                "☁️-😘",
-                "✨-🌸",
-                "🌾-🐸",
-                "🔫-💥",
-                "☁️-💟",
-                "🍀-💖",
-                "🌴-🐼",
-            ]
-            edit_heart = '''
-            1 2 2 1 2 2 1
-            2 2 2 2 2 2 2
-            2 2 2 2 2 2 2
-            1 2 2 2 2 2 1
-            1 1 2 2 2 1 1
-             1 1 1 2 1 1
-            '''
-            frame_index = 0
-            while frame_index != len(heart_emoji):
-                await utils.edit_message(message, edit_heart.replace("1", heart_emoji[frame_index].split("-")[0]).replace("2", heart_emoji[frame_index].split("-")[1]))
-                await asyncio.sleep(1)
-                frame_index += 1
-            await utils.edit_message(message, text)
+            obj = await self.animate(obj, frames, interval=0.5, inline=inline)
         except Exception as e:
-            await message.respond(self.strings("error_heart"))
-            logger.error(f"Error in heartcmd: {e}")
+            logger.error(f"Animation failed: {e}")
+
+    @loader.command(ru_doc="Отправить анимацию сердец в инлайне")
+    async def ilyicmd(self, message: Message):
+        """Отправить сообщение с анимацией сердец в инлайне"""
+        args = utils.get_args_raw(message)
+        try:
+            await self.inline.form(
+                self.strings["message"].format("*" * (len(args) or 9)),
+                reply_markup={
+                    "text": "🧸 Открыть",
+                    "callback": self.ily_handler,
+                    "args": (args or "Я люблю тебя!",),
+                    "kwargs": {"inline": True},
+                },
+                message=message,
+                disable_security=True,
+            )
+        except Exception as e:
+            logger.error(f"Inline form submission failed: {e}")
+
+    @loader.command(ru_doc="Отправить анимацию сердец")
+    async def ily(self, message: Message):
+        """Отправить сообщение с анимацией сердец"""
+        try:
+            await self.ily_handler(
+                message,
+                utils.get_args_raw(message) or "Я люблю тебя!",
+                inline=False,
+            )
+        except Exception as e:
+            logger.error(f"Sending animation failed: {e}")
